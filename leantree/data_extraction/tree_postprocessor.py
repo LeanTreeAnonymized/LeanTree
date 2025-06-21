@@ -19,6 +19,8 @@ class ProofTreePostprocessor:
             cls._remove_by_sorry_in_have(node)
             cls._transform_with_cases(node)
             cls._transform_case_tactic(node)
+            cls._transform_simp_rw(node)
+            cls._transform_rw(node)
 
             node.tactic.tactic_string = leantree.utils.remove_empty_lines(leantree.utils.remove_comments(
                 node.tactic.tactic_string
@@ -209,3 +211,50 @@ class ProofTreePostprocessor:
             constructor = " ".join(constructor_tokens[1:])
             constructors.append(constructor)
         return constructors
+
+    @classmethod
+    def _transform_simp_rw(cls, node: SingletonProofTreeNode):
+        match = re.match(r"simp_rw \[([^\n]+)]( at [^\n]+)?", node.tactic.tactic_string)
+        if not match:
+            return
+        assert len(node.tactic.spawned_goals) == 0, "`simp_rw` has spawned goals"
+
+        rules_list = match.group(1)
+        at_clause = match.group(2) or ""
+
+        def simp_only(rule: str) -> str:
+            return f"simp only [{rule}]{at_clause}"
+
+        rules = [rule.strip() for rule in rules_list.split(",")]
+        assert len(rules) > 0, "No rules in a `simp_rw`"
+        if len(rules) == 1:
+            return
+
+        node.tactic.tactic_string = simp_only(rules[0])
+        goals_after = node.tactic.goals_after
+        curr_node = node
+        for rule in rules[1:]:
+            child = SingletonProofTreeNode.create_synthetic(
+                parent=curr_node,
+            )
+            child.set_edge(SingletonProofTreeEdge.create_synthetic(
+                tactic_string=simp_only(rule),
+                goal_before=child.goal,
+                spawned_goals=[],
+                goals_after=[],  # Will be filled in.
+            ))
+            curr_node.tactic.goals_after = [child]
+            child.parent = curr_node
+
+            curr_node = child
+        curr_node.tactic.goals_after = goals_after
+        for g in goals_after:
+            g.parent = curr_node
+
+            cls._transform_simp_rw(node)
+            cls._transform_rw(node)
+
+    @classmethod
+    def _transform_rw(cls, node: SingletonProofTreeNode):
+        if node.tactic.tactic_string.strip() == "rw [rfl]":
+            node.tactic.tactic_string = "rfl"
